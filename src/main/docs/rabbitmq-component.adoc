@@ -111,7 +111,7 @@ with the following path and query parameters:
 | **networkRecoveryInterval** (advanced) | Network recovery interval in milliseconds (interval used when recovering from network failure) |  | Integer
 | **queueArgs** (advanced) | Key/value args for configuring the queue parameters when declare=true |  | Map
 | **queueArgsConfigurer** (advanced) | Set the configurer for setting the queue args in Channel.queueDeclare |  | ArgsConfigurer
-| **requestedChannelMax** (advanced) | Connection requested channel max (max number of channels offered) | 0 | int
+| **requestedChannelMax** (advanced) | Connection requested channel max (max number of channels offered) | 2047 | int
 | **requestedFrameMax** (advanced) | Connection requested frame max (max size of frame offered) | 0 | int
 | **requestedHeartbeat** (advanced) | Connection requested heartbeat (heart-beat in seconds offered) | 60 | int
 | **requestTimeout** (advanced) | Set timeout for waiting for a reply when using the InOut Exchange Pattern (in milliseconds) |  | long

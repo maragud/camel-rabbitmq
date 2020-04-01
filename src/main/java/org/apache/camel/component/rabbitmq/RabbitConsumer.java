@@ -26,10 +26,7 @@ import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.Consumer;
 import com.rabbitmq.client.Envelope;
 import com.rabbitmq.client.ShutdownSignalException;
-import org.apache.camel.Exchange;
-import org.apache.camel.ExchangePattern;
-import org.apache.camel.Message;
-import org.apache.camel.RuntimeCamelException;
+import org.apache.camel.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +36,7 @@ class RabbitConsumer implements com.rabbitmq.client.Consumer {
     private Channel channel;
     private String tag;
     /** Consumer tag for this consumer. */
-    private volatile String consumerTag;
+//    private volatile String consumerTag;
     private volatile boolean stopping;
 
     private final Semaphore lock = new Semaphore(1);
@@ -83,7 +80,7 @@ class RabbitConsumer implements com.rabbitmq.client.Consumer {
         }
     }
 
-    public void doHandleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+    public void doHandleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
         Exchange exchange = consumer.getEndpoint().createRabbitExchange(envelope, properties, body);
         consumer.getEndpoint().getMessageConverter().mergeAmqpProperties(exchange, properties);
 
@@ -96,71 +93,85 @@ class RabbitConsumer implements com.rabbitmq.client.Consumer {
         log.trace("Created exchange [exchange={}]", exchange);
         long deliveryTag = envelope.getDeliveryTag();
         try {
-            consumer.getProcessor().process(exchange);
+            consumer.getAsyncProcessor().process(exchange, doneSync -> {
+                // obtain the message after processing
+                Message msg;
+                if (exchange.hasOut()) {
+                    msg = exchange.getOut();
+                } else {
+                    msg = exchange.getIn();
+                }
+
+                if (exchange.getException() != null) {
+                    consumer.getExceptionHandler().handleException("Error processing exchange", exchange, exchange.getException());
+                }
+
+                if (!exchange.isFailed()) {
+                    // processing success
+                    if (sendReply && exchange.getPattern().isOutCapable()) {
+                        try {
+                            consumer.getEndpoint().publishExchangeToChannel(exchange, channel, properties.getReplyTo());
+                        } catch (RuntimeCamelException e) {
+                            // set the exception on the exchange so it can send the
+                            // exception back to the producer
+                            exchange.setException(e);
+                            consumer.getExceptionHandler().handleException("Error processing exchange", exchange, e);
+                        } catch (IOException e) {
+                            exchange.setException(e);
+                        }
+                    }
+                    if (!consumer.getEndpoint().isAutoAck()) {
+                        log.trace("Acknowledging receipt [delivery_tag={}]", deliveryTag);
+                        try {
+                            channel.basicAck(deliveryTag, false);
+                        } catch (IOException e) {
+                            exchange.setException(e);
+                        }
+                    }
+                }
+                // The exchange could have failed when sending the above message
+                if (exchange.isFailed()) {
+                    if (consumer.getEndpoint().isTransferException() && exchange.getPattern().isOutCapable()) {
+                        // the inOut exchange failed so put the exception in the body
+                        // and send back
+                        msg.setBody(exchange.getException());
+                        exchange.setOut(msg);
+                        exchange.getOut().setHeader(RabbitMQConstants.CORRELATIONID, exchange.getIn().getHeader(RabbitMQConstants.CORRELATIONID));
+                        try {
+                            consumer.getEndpoint().publishExchangeToChannel(exchange, channel, properties.getReplyTo());
+                        } catch (RuntimeCamelException e) {
+                            consumer.getExceptionHandler().handleException("Error processing exchange", exchange, e);
+                        } catch (IOException e) {
+                            exchange.setException(e);
+                        }
+
+                        if (!consumer.getEndpoint().isAutoAck()) {
+                            log.trace("Acknowledging receipt when transferring exception [delivery_tag={}]", deliveryTag);
+                            try {
+                                channel.basicAck(deliveryTag, false);
+                            } catch (IOException e) {
+                                exchange.setException(e);
+                            }
+                        }
+                    } else {
+                        boolean isRequeueHeaderSet = msg.getHeader(RabbitMQConstants.REQUEUE, false, boolean.class);
+                        // processing failed, then reject and handle the exception
+                        if (deliveryTag != 0 && !consumer.getEndpoint().isAutoAck()) {
+                            log.trace("Rejecting receipt [delivery_tag={}] with requeue={}", deliveryTag, isRequeueHeaderSet);
+                            try {
+                                channel.basicReject(deliveryTag, isRequeueHeaderSet);
+                            } catch (IOException e) {
+                                exchange.setException(e);
+                            }
+                        }
+                    }
+                }
+            });
         } catch (Exception e) {
             exchange.setException(e);
         }
 
-        // obtain the message after processing
-        Message msg;
-        if (exchange.hasOut()) {
-            msg = exchange.getOut();
-        } else {
-            msg = exchange.getIn();
-        }
 
-        if (exchange.getException() != null) {
-            consumer.getExceptionHandler().handleException("Error processing exchange", exchange, exchange.getException());
-        }
-
-        if (!exchange.isFailed()) {
-            // processing success
-            if (sendReply && exchange.getPattern().isOutCapable()) {
-                try {
-                    consumer.getEndpoint().publishExchangeToChannel(exchange, channel, properties.getReplyTo());
-                } catch (RuntimeCamelException e) {
-                    // set the exception on the exchange so it can send the
-                    // exception back to the producer
-                    exchange.setException(e);
-                    consumer.getExceptionHandler().handleException("Error processing exchange", exchange, e);
-                }
-            }
-            if (!consumer.getEndpoint().isAutoAck()) {
-                log.trace("Acknowledging receipt [delivery_tag={}]", deliveryTag);
-                channel.basicAck(deliveryTag, false);
-            }
-        }
-        // The exchange could have failed when sending the above message
-        if (exchange.isFailed()) {
-            if (consumer.getEndpoint().isTransferException() && exchange.getPattern().isOutCapable()) {
-                // the inOut exchange failed so put the exception in the body
-                // and send back
-                msg.setBody(exchange.getException());
-                exchange.setOut(msg);
-                exchange.getOut().setHeader(RabbitMQConstants.CORRELATIONID, exchange.getIn().getHeader(RabbitMQConstants.CORRELATIONID));
-                try {
-                    consumer.getEndpoint().publishExchangeToChannel(exchange, channel, properties.getReplyTo());
-                } catch (RuntimeCamelException e) {
-                    consumer.getExceptionHandler().handleException("Error processing exchange", exchange, e);
-                }
-
-                if (!consumer.getEndpoint().isAutoAck()) {
-                    log.trace("Acknowledging receipt when transferring exception [delivery_tag={}]", deliveryTag);
-                    channel.basicAck(deliveryTag, false);
-                }
-            } else {
-                boolean isRequeueHeaderSet = msg.getHeader(RabbitMQConstants.REQUEUE, false, boolean.class);
-                // processing failed, then reject and handle the exception
-                if (deliveryTag != 0 && !consumer.getEndpoint().isAutoAck()) {
-                    log.trace("Rejecting receipt [delivery_tag={}] with requeue={}", deliveryTag, isRequeueHeaderSet);
-                    if (isRequeueHeaderSet) {
-                        channel.basicReject(deliveryTag, true);
-                    } else {
-                        channel.basicReject(deliveryTag, false);
-                    }
-                }
-            }
-        }
     }
 
     /**
@@ -170,7 +181,11 @@ class RabbitConsumer implements com.rabbitmq.client.Consumer {
         if (channel == null) {
             throw new IOException("The RabbitMQ channel is not open");
         }
-        tag = channel.basicConsume(consumer.getEndpoint().getQueue(), consumer.getEndpoint().isAutoAck(), this);
+//        tag = channel.basicConsume(consumer.getEndpoint().getQueue(), consumer.getEndpoint().isAutoAck(), this);
+        tag = channel.basicConsume(consumer.getEndpoint().getQueue(), consumer.getEndpoint().isAutoAck(),
+                (tag, message) -> doHandleDelivery(tag, message.getEnvelope(), message.getProperties(), message.getBody()),
+                tag -> log.debug("Received cancel signal on the rabbitMQ channel"),
+                this::handleShutdownSignal);
     }
 
     /**
@@ -207,17 +222,17 @@ class RabbitConsumer implements com.rabbitmq.client.Consumer {
      * @see Consumer#handleConsumeOk
      */
     public void handleConsumeOk(String consumerTag) {
-        this.consumerTag = consumerTag;
+//        this.consumerTag = consumerTag;
     }
 
-    /**
-     * Retrieve the consumer tag.
-     *
-     * @return the most recently notified consumer tag.
-     */
-    public String getConsumerTag() {
-        return consumerTag;
-    }
+//    /**
+//     * Retrieve the consumer tag.
+//     *
+//     * @return the most recently notified consumer tag.
+//     */
+//    public String getConsumerTag() {
+//        return consumerTag;
+//    }
 
     /**
      * No-op implementation of {@link Consumer#handleCancelOk}.

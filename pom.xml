@@ -40,7 +40,7 @@
     <dependency>
       <groupId>com.rabbitmq</groupId>
       <artifactId>amqp-client</artifactId>
-      <version>${rabbitmq-amqp-client-version}</version>
+      <version>5.8.0</version>
     </dependency>
     <dependency>
       <groupId>commons-pool</groupId>
