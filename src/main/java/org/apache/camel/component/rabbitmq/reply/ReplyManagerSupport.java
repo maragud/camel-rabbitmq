@@ -22,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Connection;
-
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
@@ -152,8 +151,8 @@ public abstract class ReplyManagerSupport extends ServiceSupport implements Repl
                     String msg = "reply message with correlationID: " + holder.getCorrelationId() + " not received on destination: " + replyTo;
                     exchange.setException(new ExchangeTimedOutException(exchange, holder.getRequestTimeout(), msg));
                 } else {
-                    
-                    messageConverter.populateRabbitExchange(exchange, null, holder.getProperties(), holder.getMessage(), true);
+                    messageConverter.populateRabbitExchange(exchange, null, holder.getProperties(), holder.getMessage(), true,
+                                                            endpoint.isAllowMessageBodySerialization());
 
                     // restore correlation id in case the remote server messed with it
                     if (holder.getOriginalCorrelationId() != null) {
@@ -224,6 +223,7 @@ public abstract class ReplyManagerSupport extends ServiceSupport implements Repl
         ObjectHelper.notNull(executorService, "executorService", this);
         ObjectHelper.notNull(endpoint, "endpoint", this);
 
+        messageConverter.setAllowNullHeaders(endpoint.isAllowNullHeaders());
         // timeout map to use for purging messages which have timed out, while waiting for an expected reply
         // when doing request/reply over JMS
         log.debug("Using timeout checker interval with {} millis", endpoint.getRequestTimeoutCheckerInterval());

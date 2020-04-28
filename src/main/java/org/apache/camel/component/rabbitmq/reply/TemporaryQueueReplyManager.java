@@ -24,7 +24,7 @@ import com.rabbitmq.client.AMQP.Queue.DeclareOk;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.Envelope;
-
+import com.rabbitmq.client.impl.recovery.AutorecoveringConnection;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
@@ -76,10 +76,10 @@ public class TemporaryQueueReplyManager extends ReplyManagerSupport {
     @Override
     protected Connection createListenerContainer() throws Exception {
 
-        log.debug("Creating connection");
+        log.trace("Creating connection");
         Connection conn = endpoint.connect(executorService);
 
-        log.debug("Creating channel");
+        log.trace("Creating channel");
         Channel channel = conn.createChannel();
         // setup the basicQos
         if (endpoint.isPrefetchEnabled()) {
@@ -89,11 +89,27 @@ public class TemporaryQueueReplyManager extends ReplyManagerSupport {
 
         //Let the server pick a random name for us
         DeclareOk result = channel.queueDeclare();
-        log.info("Using temporary queue name: {}", result.getQueue());
+        log.debug("Using temporary queue name: {}", result.getQueue());
         setReplyTo(result.getQueue());
 
         //TODO check for the RabbitMQConstants.EXCHANGE_NAME header
         channel.queueBind(getReplyTo(), endpoint.getExchangeName(), getReplyTo());
+
+        //Add QueueRecoveryListener to notify when temporary queue name changes due to recovery
+        if (conn instanceof AutorecoveringConnection) {
+            ((AutorecoveringConnection) conn).addQueueRecoveryListener((oldName, newName) -> {
+                log.debug("Temporary queue name {} was changed to {}. Updating replyTo.", oldName, newName);
+                setReplyTo(newName);
+
+                log.debug("Trying to rebind the new temporary queue to update routingKey");
+                try {
+                    channel.queueBind(newName, endpoint.getExchangeName(), newName);
+                    channel.queueUnbind(newName, endpoint.getExchangeName(), oldName);
+                } catch (IOException e) {
+                    log.warn("Failed to bind or unbind a queue. This exception is ignored.", e);
+                }
+            });
+        }
 
         consumer = new RabbitConsumer(this, channel);
         consumer.start();
@@ -136,7 +152,7 @@ public class TemporaryQueueReplyManager extends ReplyManagerSupport {
          * Bind consumer to channel
          */
         private void start() throws IOException {
-            tag = channel.basicConsume(getReplyTo(), endpoint.isAutoAck(), this);
+            tag = channel.basicConsume(getReplyTo(), true, this);
         }
 
         /**
