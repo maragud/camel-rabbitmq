@@ -70,7 +70,6 @@ class RabbitConsumer extends ServiceSupport {
         log.trace("Created exchange [exchange={}]", exchange);
         long deliveryTag = envelope.getDeliveryTag();
         try {
-            consumer.getProcessor().process(exchange);
             consumer.getAsyncProcessor().process(exchange, doneSync -> asyncCallback(doneSync, properties, exchange, sendReply, deliveryTag));
         } catch (Exception e) {
             exchange.setException(e);
