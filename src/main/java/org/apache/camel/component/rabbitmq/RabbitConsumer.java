@@ -28,12 +28,13 @@ import org.apache.camel.support.ServiceSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-class RabbitConsumer extends ServiceSupport {
+class RabbitConsumer extends ServiceSupport implements com.rabbitmq.client.Consumer {
     private final Logger log = LoggerFactory.getLogger(getClass());
     private final RabbitMQConsumer consumer;
     private Channel channel;
     private String tag;
     /** Consumer tag for this consumer. */
+    private volatile String consumerTag;
     private volatile boolean stopping;
 
     private final Semaphore lock = new Semaphore(1);
@@ -53,11 +54,39 @@ class RabbitConsumer extends ServiceSupport {
         }
     }
 
-    private void handleDelivery(String consumerTag, Delivery message) {
-        doHandleDelivery(tag, message.getEnvelope(), message.getProperties(), message.getBody());
+    private boolean shouldLock() {
+        return !consumer.getEndpoint().isAutoAck() &&
+                consumer.getEndpoint().isLockManualAckConsumer();
     }
 
-    public void doHandleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
+    @Override
+    public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
+        try {
+            if (shouldLock()) {
+                lock.acquire();
+            }
+            //Channel might be open because while we were waiting for the lock, stop() has been succesfully called.
+            if (!channel.isOpen()) {
+                // we could not open the channel so release the lock
+                if (shouldLock()) {
+                    lock.release();
+                }
+                return;
+            }
+
+            try {
+                doHandleDelivery(consumerTag, envelope, properties, body);
+            } finally {
+                if (shouldLock()) {
+                    lock.release();
+                }
+            }
+        } catch (InterruptedException e) {
+            log.warn("Thread Interrupted!");
+        }
+    }
+
+    public void doHandleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
         Exchange exchange = consumer.getEndpoint().createRabbitExchange(envelope, properties, body);
         consumer.getEndpoint().getMessageConverter().mergeAmqpProperties(exchange, properties);
 
@@ -70,7 +99,13 @@ class RabbitConsumer extends ServiceSupport {
         log.trace("Created exchange [exchange={}]", exchange);
         long deliveryTag = envelope.getDeliveryTag();
         try {
-            consumer.getAsyncProcessor().process(exchange, doneSync -> asyncCallback(doneSync, properties, exchange, sendReply, deliveryTag));
+            if (shouldLock()) {
+                // Execute route synchronously since the consumer is locked
+                consumer.getProcessor().process(exchange);
+                asyncCallback(true, properties, exchange, sendReply, deliveryTag);
+            } else {
+                consumer.getAsyncProcessor().process(exchange, doneSync -> asyncCallback(doneSync, properties, exchange, sendReply, deliveryTag));
+            }
         } catch (Exception e) {
             exchange.setException(e);
         }
@@ -156,9 +191,7 @@ class RabbitConsumer extends ServiceSupport {
         if (channel == null) {
             throw new IOException("The RabbitMQ channel is not open");
         }
-        tag = channel.basicConsume(consumer.getEndpoint().getQueue(), consumer.getEndpoint().isAutoAck(), "",
-                false, consumer.getEndpoint().isExclusiveConsumer(), null,
-                this::handleDelivery, this::handleCancel, this::handleShutdownSignal);
+        tag = channel.basicConsume(consumer.getEndpoint().getQueue(), consumer.getEndpoint().isAutoAck(), "", false, consumer.getEndpoint().isExclusiveConsumer(), null, this);
     }
 
     @Override
@@ -182,6 +215,36 @@ class RabbitConsumer extends ServiceSupport {
         } finally {
             lock.release();
         }
+    }
+
+    /**
+     * Stores the most recently passed-in consumerTag - semantically, there
+     * should be only one.
+     *
+     * @see Consumer#handleConsumeOk
+     */
+    public void handleConsumeOk(String consumerTag) {
+        this.consumerTag = consumerTag;
+    }
+
+    /**
+     * Retrieve the consumer tag.
+     *
+     * @return the most recently notified consumer tag.
+     */
+    public String getConsumerTag() {
+        return consumerTag;
+    }
+
+    /**
+     * No-op implementation of {@link Consumer#handleCancelOk}.
+     *
+     * @param consumerTag
+     *            the defined consumer tag (client- or server-generated)
+     */
+    public void handleCancelOk(String consumerTag) {
+        // no work to do
+        log.debug("Received cancelOk signal on the rabbitMQ channel");
     }
 
     /**
@@ -238,6 +301,14 @@ class RabbitConsumer extends ServiceSupport {
                 }
             }
         }
+    }
+
+    /**
+     * No-op implementation of {@link Consumer#handleRecoverOk}.
+     */
+    public void handleRecoverOk(String consumerTag) {
+        // no work to do
+        log.debug("Received recover ok signal on the rabbitMQ channel");
     }
 
     /**

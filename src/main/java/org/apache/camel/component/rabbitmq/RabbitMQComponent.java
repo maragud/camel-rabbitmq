@@ -56,6 +56,8 @@ public class RabbitMQComponent extends UriEndpointComponent {
     private ConnectionFactory connectionFactory;
     @Metadata(label = "consumer", defaultValue = "true")
     private boolean autoAck = true;
+    @Metadata(label = "consumer", defaultValue = "true")
+    private boolean lockManualAckConsumer = true;
     @Metadata(label = "common", defaultValue = "true")
     private boolean autoDelete = true;
     @Metadata(label = "common", defaultValue = "true")
@@ -231,6 +233,7 @@ public class RabbitMQComponent extends UriEndpointComponent {
         endpoint.setMandatory(isMandatory());
         endpoint.setImmediate(isImmediate());
         endpoint.setAutoAck(isAutoAck());
+        endpoint.setLockManualAckConsumer(isLockManualAckConsumer());
         endpoint.setAutoDelete(isAutoDelete());
         endpoint.setDurable(isDurable());
         endpoint.setExclusive(isExclusive());
@@ -714,6 +717,17 @@ public class RabbitMQComponent extends UriEndpointComponent {
      */
     public void setAutoAck(boolean autoAck) {
         this.autoAck = autoAck;
+    }
+
+    public boolean isLockManualAckConsumer() {
+        return lockManualAckConsumer;
+    }
+
+    /**
+     * If RabbitMQ consumer should be locked when manually acknowledging messages
+     */
+    public void setLockManualAckConsumer(boolean lockManualAckConsumer) {
+        this.lockManualAckConsumer = lockManualAckConsumer;
     }
 
     public boolean isAutoDelete() {

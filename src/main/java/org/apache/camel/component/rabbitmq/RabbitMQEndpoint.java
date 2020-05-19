@@ -71,6 +71,8 @@ public class RabbitMQEndpoint extends DefaultEndpoint implements AsyncEndpoint {
     private int threadPoolSize = 10;
     @UriParam(label = "consumer", defaultValue = "true")
     private boolean autoAck = true;
+    @UriParam(label = "consumer", defaultValue = "true")
+    private boolean lockManualAckConsumer = true;
     @UriParam(label = "common", defaultValue = "true")
     private boolean autoDelete = true;
     @UriParam(label = "common", defaultValue = "true")
@@ -344,6 +346,17 @@ public class RabbitMQEndpoint extends DefaultEndpoint implements AsyncEndpoint {
      */
     public void setAutoAck(boolean autoAck) {
         this.autoAck = autoAck;
+    }
+
+    public boolean isLockManualAckConsumer() {
+        return lockManualAckConsumer;
+    }
+
+    /**
+     * If RabbitMQ consumer should be locked when manually acknowledging messages
+     */
+    public void setLockManualAckConsumer(boolean lockManualAckConsumer) {
+        this.lockManualAckConsumer = lockManualAckConsumer;
     }
 
     public boolean isAutoDelete() {
